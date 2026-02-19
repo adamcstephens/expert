@@ -256,29 +256,77 @@ defmodule Expert.EngineNode do
     # Expert release, and we build it on the fly for the project elixir+opt
     # versions if it was not built yet.
     #
-    # If EXPERT_ENGINE_BUILD_PATH is set, skip the build and use the pre-built
-    # engine at that path directly (e.g. a Nix store path).
+    # If EXPERT_ENGINE_BUILD_PATH is set, use the pre-built engine at that path
+    # directly (e.g. a Nix store path) when the Elixir version matches the
+    # running system. Otherwise falls back to building via build_engine.exs.
+    @system_elixir_version System.version()
+
     defp glob_paths(%Project{} = project) do
       case System.get_env("EXPERT_ENGINE_BUILD_PATH") do
         nil ->
-          with {:ok, elixir, env} <- Expert.Port.project_executable(project, "elixir"),
-               {:ok, erl, _env} <- Expert.Port.project_executable(project, "erl") do
-            lsp = Expert.get_lsp()
-            Expert.log_info(lsp, project, "Using path: #{System.get_env("PATH")}")
-            Expert.log_info(lsp, project, "Found elixir executable at #{elixir}")
-            Expert.log_info(lsp, project, "Found erl executable at #{erl}")
-
-            launch_engine_builder(project, elixir, env)
-          else
-            {:error, name, message} ->
-              GenLSP.error(Expert.get_lsp(), message)
-              Expert.terminate("Failed to find an #{name} executable, shutting down", 1)
-          end
+          launch_engine_builder_for_project(project)
 
         path ->
           expanded = Path.expand(path)
-          Logger.info("Using pre-built engine at: #{expanded}")
-          {:ok, ebin_paths(expanded)}
+
+          case prebuilt_elixir_version(expanded) do
+            {:ok, @system_elixir_version} ->
+              Logger.info("Using pre-built engine at: #{expanded}")
+              {:ok, prebuilt_ebin_paths(expanded)}
+
+            {:ok, built_vsn} ->
+              Logger.warning(
+                msg: "Pre-built engine Elixir version mismatch, falling back to build",
+                built_vsn: built_vsn,
+                system_vsn: @system_elixir_version
+              )
+
+              launch_engine_builder_for_project(project)
+
+            :error ->
+              Logger.warning(
+                msg: "Could not determine pre-built engine Elixir version, falling back to build",
+                path: expanded
+              )
+
+              launch_engine_builder_for_project(project)
+          end
+      end
+    end
+
+    defp prebuilt_elixir_version(path) do
+      case Path.join(path, "lib") |> File.ls() do
+        {:ok, entries} ->
+          entries
+          |> Enum.find_value(fn entry ->
+            case String.split(entry, "-", parts: 2) do
+              ["elixir", vsn] -> vsn
+              _ -> nil
+            end
+          end)
+          |> case do
+            nil -> :error
+            vsn -> {:ok, vsn}
+          end
+
+        {:error, _} ->
+          :error
+      end
+    end
+
+    defp launch_engine_builder_for_project(%Project{} = project) do
+      with {:ok, elixir, env} <- Expert.Port.project_executable(project, "elixir"),
+           {:ok, erl, _env} <- Expert.Port.project_executable(project, "erl") do
+        lsp = Expert.get_lsp()
+        Expert.log_info(lsp, project, "Using path: #{System.get_env("PATH")}")
+        Expert.log_info(lsp, project, "Found elixir executable at #{elixir}")
+        Expert.log_info(lsp, project, "Found erl executable at #{erl}")
+
+        launch_engine_builder(project, elixir, env)
+      else
+        {:error, name, message} ->
+          GenLSP.error(Expert.get_lsp(), message)
+          Expert.terminate("Failed to find an #{name} executable, shutting down", 1)
       end
     end
 
@@ -347,6 +395,21 @@ defmodule Expert.EngineNode do
 
     defp ebin_paths(base_path) do
       Forge.Path.glob([base_path, "lib/**/ebin"])
+    end
+
+    defp prebuilt_ebin_paths(base_path) do
+      # Filter out OTP/Elixir stdlib apps that ship with the user's runtime.
+      # A Nix mixRelease bundles the full OTP release (elixir, kernel, stdlib,
+      # etc.), but those must not be loaded via -pa into the engine node as they
+      # would override the user's own runtime versions.
+      system_lib_dirs =
+        :code.get_path()
+        |> Enum.map(&Path.dirname(to_string(&1)))
+        |> MapSet.new()
+
+      base_path
+      |> ebin_paths()
+      |> Enum.reject(fn path -> MapSet.member?(system_lib_dirs, Path.dirname(path)) end)
     end
   end
 
