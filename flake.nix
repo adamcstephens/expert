@@ -57,7 +57,8 @@
         packages = rec {
           default = expert;
 
-          expert = pkgs.callPackage ./nix/expert.nix {inherit beamPackages;};
+          expert = pkgs.callPackage ./nix/expert.nix { inherit beamPackages engine; };
+          engine = pkgs.callPackage ./nix/engine.nix { inherit beamPackages; };
         };
 
         beamWorkspace = {

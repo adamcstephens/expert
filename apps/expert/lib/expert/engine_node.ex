@@ -255,19 +255,30 @@ defmodule Expert.EngineNode do
     # In dev and prod environments, the engine source code is included in the
     # Expert release, and we build it on the fly for the project elixir+opt
     # versions if it was not built yet.
+    #
+    # If EXPERT_ENGINE_BUILD_PATH is set, skip the build and use the pre-built
+    # engine at that path directly (e.g. a Nix store path).
     defp glob_paths(%Project{} = project) do
-      with {:ok, elixir, env} <- Expert.Port.project_executable(project, "elixir"),
-           {:ok, erl, _env} <- Expert.Port.project_executable(project, "erl") do
-        lsp = Expert.get_lsp()
-        Expert.log_info(lsp, project, "Using path: #{System.get_env("PATH")}")
-        Expert.log_info(lsp, project, "Found elixir executable at #{elixir}")
-        Expert.log_info(lsp, project, "Found erl executable at #{erl}")
+      case System.get_env("EXPERT_ENGINE_BUILD_PATH") do
+        nil ->
+          with {:ok, elixir, env} <- Expert.Port.project_executable(project, "elixir"),
+               {:ok, erl, _env} <- Expert.Port.project_executable(project, "erl") do
+            lsp = Expert.get_lsp()
+            Expert.log_info(lsp, project, "Using path: #{System.get_env("PATH")}")
+            Expert.log_info(lsp, project, "Found elixir executable at #{elixir}")
+            Expert.log_info(lsp, project, "Found erl executable at #{erl}")
 
-        launch_engine_builder(project, elixir, env)
-      else
-        {:error, name, message} ->
-          GenLSP.error(Expert.get_lsp(), message)
-          Expert.terminate("Failed to find an #{name} executable, shutting down", 1)
+            launch_engine_builder(project, elixir, env)
+          else
+            {:error, name, message} ->
+              GenLSP.error(Expert.get_lsp(), message)
+              Expert.terminate("Failed to find an #{name} executable, shutting down", 1)
+          end
+
+        path ->
+          expanded = Path.expand(path)
+          Logger.info("Using pre-built engine at: #{expanded}")
+          {:ok, ebin_paths(expanded)}
       end
     end
 

@@ -1,13 +1,11 @@
 {
   beamPackages,
   callPackages,
+  engine,
   lib,
-}: let
+}:
+let
   version = builtins.readFile ../version.txt;
-
-  engineDeps = callPackages ../apps/engine/deps.nix {
-    inherit lib beamPackages;
-  };
 in
   beamPackages.mixRelease rec {
     pname = "expert";
@@ -30,23 +28,15 @@ in
 
     mixReleaseName = "plain";
 
-    preConfigure = ''
-      # copy the logic from mixRelease to build a deps dir for engine
-      mkdir -p apps/engine/deps
-      ${lib.concatMapAttrsStringSep "\n" (name: dep: ''
-          dep_path="apps/engine/deps/${name}"
-          if [ -d "${dep}/src" ]; then
-            ln -sv ${dep}/src $dep_path
-          fi
-        '')
-        engineDeps}
+    env.EXPERT_ENGINE_BUILD_PATH = "${engine}";
 
-        cd apps/expert
+    preConfigure = ''
+      cd apps/expert
     '';
 
     postInstall = ''
       mv $out/bin/plain $out/bin/expert
-      wrapProgram $out/bin/expert --add-flag "eval" --add-flag "System.no_halt(true); Application.ensure_all_started(:xp_expert)"
+      wrapProgram $out/bin/expert --add-flag "eval" --add-flag "System.no_halt(true); Application.ensure_all_started(:xp_expert)" --set EXPERT_ENGINE_BUILD_PATH ${engine}
     '';
 
     removeCookie = false;
@@ -54,7 +44,7 @@ in
     passthru = {
       # not used by package, but exposed for repl and direct build access
       # e.g. nix build .#expert.mixNixDeps.jason
-      inherit engineDeps mixNixDeps;
+      inherit mixNixDeps;
     };
 
     meta.mainProgram = "expert";
